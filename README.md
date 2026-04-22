@@ -99,7 +99,7 @@ python tools/fastbev_infer.py \
 - 按 `config` 自动构建测试数据集和测试 pipeline
 - 从 `cfg.data.test.ann_file` 中取指定样本
 - 运行 FastBEV 单样本推理
-- 输出结构化 JSON，便于后续做感知信息提取
+- 输出结构化 JSON 和推理耗时，便于后续做感知信息提取
 
 默认输出目录:
 
@@ -168,13 +168,71 @@ python tools/fastbev_infer.py \
 outputs/fastbev_infer/b6b0d9f2f2e14a3aaa2c8aedeb1edb69.json
 ```
 
+命令行还会额外打印:
+
+- `num_detections`
+- `inference_ms`
+- `output_json`
+
+### 4.6 连续帧可视化与视频导出
+
+为了继续推进“感知实时推理”，当前仓库已经增加:
+
+- [tools/fastbev_video_demo.py](/home/ego_vehicle/MY_project/BEV_perception/advanced-fastbev-fastbev/tools/fastbev_video_demo.py)
+
+这个脚本会连续读取多帧样本，并导出:
+
+- 六路相机输入拼图
+- 模型生成的 BEV 特征热力图
+- 检测框渲染后的 BEV 结果图
+- 最终 MP4 视频
+- 每帧耗时和平均耗时汇总 `summary.json`
+
+示例命令:
+
+```bash
+python tools/fastbev_video_demo.py 
+  configs/fastbev/paper/fastbev-r50-cbgs.py 
+  model/fastbev-r50-cbgs.pth 
+  --start-index 10 
+  --num-frames 30 
+  --device cuda:0 
+  --score-thr 0.35 
+  --fps 6
+```
+
+默认输出目录:
+
+```bash
+outputs/fastbev_demo/
+```
+
+输出内容包括:
+
+- `fastbev_demo.mp4`
+- `summary.json`
+- 可选的逐帧图片 `frames/`
+
+### 4.7 视频脚本常用参数
+
+- `--start-index`: 起始样本索引
+- `--start-token`: 起始样本 token
+- `--num-frames`: 连续处理多少帧
+- `--stride`: 帧间隔
+- `--fps`: 输出视频帧率
+- `--bev-size`: 右侧 BEV 图尺寸
+- `--cam-width`: 单个相机子图宽度
+- `--warmup`: 计算平均耗时时跳过前几帧
+- `--save-frames`: 额外保存逐帧 JPG
+
 如果在 WSL + GPU 环境里遇到类似下面的错误:
 
 ```bash
 cusolverDnCreate(handle)
+cusparseCreate(handle)
 ```
 
-当前仓库已经在 `FastBEV.prepare_inputs()` 中把关键的 `4x4` 位姿逆矩阵计算改成 CPU 执行，再搬回原设备，避免这类 cuSOLVER 初始化问题阻塞推理。
+当前仓库已经在 `FastBEV` 和 `FastRayTransformer` 的关键位姿矩阵求逆路径上增加了 CPU 兜底，再搬回原设备，避免这类 cuSOLVER/cuSPARSE 初始化问题阻塞推理。
 
 ## 5. JSON 输出格式
 
@@ -190,6 +248,11 @@ cusolverDnCreate(handle)
 - `label`
 - `label_name`
 - `score`
+- `center_xyz`
+- `size_xyz`
+- `yaw`
+- `velocity_xy`
+- `bev_distance`
 - `box_3d`
 
 其中 `box_3d` 直接对应模型输出的 3D 框张量，适合后续继续做:
@@ -223,24 +286,58 @@ python tools/test.py \
   --eval mAP
 ```
 
-## 7. TensorRT 相关
+## 7. 推理耗时与部署
 
-仓库里已经保留了导出和测速脚本:
+### 7.1 PyTorch 推理耗时
 
-- `tools/convert_fastbev_to_TRT.py`
-- `tools/analysis_tools/benchmark_trt_fastbev.py`
+单样本脚本 `tools/fastbev_infer.py` 会打印单帧推理耗时:
 
-但在当前机器上，建议先把 PyTorch 推理链路和结果导出链路稳定下来，再继续做 TensorRT 部署。
+```bash
+inference_ms: 123.45
+```
+
+连续帧脚本 `tools/fastbev_video_demo.py` 会打印:
+
+- 当前帧推理耗时
+- 去掉 warmup 后的平均耗时
+- 平均 FPS
+
+其中 `summary.json` 会保留完整统计，便于后面和 ONNX / TensorRT 对比。
+
+### 7.2 ONNX / TensorRT 现状
+
+仓库里已经保留了 FastBEV 的导出和 TensorRT 测速脚本:
+
+- [tools/convert_fastbev_to_TRT.py](/home/ego_vehicle/MY_project/BEV_perception/advanced-fastbev-fastbev/tools/convert_fastbev_to_TRT.py)
+- [tools/analysis_tools/benchmark_trt_fastbev.py](/home/ego_vehicle/MY_project/BEV_perception/advanced-fastbev-fastbev/tools/analysis_tools/benchmark_trt_fastbev.py)
+
+但是当前这套环境里还没有安装这些部署依赖:
+
+- `onnx`
+- `onnxsim`
+- `tensorrt`
+- `mmdeploy`
+
+所以当前阶段已经可以稳定做的是:
+
+- PyTorch 推理基线测速
+- 连续帧视频可视化
+- 后续感知信息提取开发
+
+等你确认要继续压缩推理时间时，下一步再补这套部署依赖，然后做两件事:
+
+1. 导出 ONNX
+2. 用 TensorRT engine 跑 `benchmark_trt_fastbev.py`，和 `summary.json` 里的 PyTorch 基线做对比
 
 ## 8. 后续开发建议
 
 如果你后面主要做“推理和感知信息获取”，建议下一步优先往这几个方向推进:
 
-1. 扩展 `tools/fastbev_infer.py`，支持批量样本推理
-2. 增加结果字段拆分，例如中心点、尺寸、朝向、速度
-3. 增加按类别过滤、按分数过滤、按距离过滤
-4. 增加 BEV 可视化和多相机叠加可视化
-5. 增加面向下游模块的标准输出接口
+1. 扩展 `tools/fastbev_video_demo.py`，支持固定 scene 内连续帧推理
+2. 增加按类别过滤、按分数过滤、按距离过滤
+3. 增加 BEV 特征图和检测结果的分开导出
+4. 增加面向下游模块的标准输出接口
+5. 继续推进 ONNX / TensorRT / 缓存优化
 
 ## 9. 分阶段推进计划
 

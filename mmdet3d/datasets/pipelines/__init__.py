@@ -1,6 +1,5 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 from .compose import Compose
-from .dbsampler import DataBaseSampler
 from .formating import Collect3D, DefaultFormatBundle, DefaultFormatBundle3D
 from .loading import (LoadAnnotations3D, LoadAnnotations, BEVAug,
                       LoadImageFromFileMono3D, LoadMultiViewImageFromFiles,
@@ -9,17 +8,26 @@ from .loading import (LoadAnnotations3D, LoadAnnotations, BEVAug,
                       PointSegClassMapping, PointToMultiViewDepth,
                       PrepareImageInputs, LoadOccGTFromFile)
 from .test_time_aug import MultiScaleFlipAug3D
-# yapf: disable
-from .transforms_3d import (AffineResize, BackgroundPointsFilter,
-                            GlobalAlignment, GlobalRotScaleTrans,
-                            IndoorPatchPointSample, IndoorPointSample,
-                            MultiViewWrapper, ObjectNameFilter, ObjectNoise,
-                            ObjectRangeFilter, ObjectSample, PointSample,
-                            PointShuffle, PointsRangeFilter,
-                            RandomDropPointsColor, RandomFlip3D,
-                            RandomJitterPoints, RandomRotate, RandomShiftScale,
-                            RangeLimitedRandomCrop, ToEgo, VelocityAug,
-                            VoxelBasedPointSampler)
+
+try:
+    from .dbsampler import DataBaseSampler
+except Exception:
+    DataBaseSampler = None
+
+try:
+    # yapf: disable
+    from .transforms_3d import (AffineResize, BackgroundPointsFilter,
+                                GlobalAlignment, GlobalRotScaleTrans,
+                                IndoorPatchPointSample, IndoorPointSample,
+                                MultiViewWrapper, ObjectNameFilter, ObjectNoise,
+                                ObjectRangeFilter, ObjectSample, PointSample,
+                                PointShuffle, PointsRangeFilter,
+                                RandomDropPointsColor, RandomFlip3D,
+                                RandomJitterPoints, RandomRotate, RandomShiftScale,
+                                RangeLimitedRandomCrop, ToEgo, VelocityAug,
+                                VoxelBasedPointSampler)
+except Exception:
+    pass
 
 __all__ = [
     'ObjectSample', 'RandomFlip3D', 'ObjectNoise', 'GlobalRotScaleTrans',

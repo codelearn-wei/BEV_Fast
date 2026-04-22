@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import time
 from pathlib import Path
 
 import mmcv
@@ -185,13 +186,47 @@ def serialize_result(result, class_names, score_thr, topk):
     detections = []
     for box, score, label in zip(boxes, scores, labels):
         label_id = int(label.item())
+        velocity_xy = [0.0, 0.0]
+        if box.shape[0] >= 9:
+            velocity_xy = [float(box[7].item()), float(box[8].item())]
         detections.append({
             'label': label_id,
             'label_name': class_names[label_id],
             'score': float(score.item()),
+            'center_xyz': [float(x) for x in box[:3].tolist()],
+            'size_xyz': [float(x) for x in box[3:6].tolist()],
+            'yaw': float(box[6].item()),
+            'velocity_xy': velocity_xy,
+            'bev_distance': float(torch.linalg.norm(box[:2], ord=2).item()),
             'box_3d': [float(x) for x in box.tolist()],
         })
     return detections
+
+
+def run_inference(model, batch, rescale=True, return_bev_feature=False):
+    device = next(model.parameters()).device
+    is_cuda = device.type == 'cuda'
+
+    points = batch['points'][0] if 'points' in batch else None
+    img_metas = batch['img_metas'][0]
+    img_inputs = batch['img_inputs'][0]
+
+    if is_cuda:
+        torch.cuda.synchronize(device)
+    start_time = time.perf_counter()
+
+    with torch.no_grad():
+        img_feats, _, _ = model.extract_feat(
+            points, img=img_inputs, img_metas=img_metas)
+        bbox_pts = model.simple_test_pts(img_feats, img_metas, rescale=rescale)
+
+    if is_cuda:
+        torch.cuda.synchronize(device)
+    inference_ms = (time.perf_counter() - start_time) * 1000.0
+
+    result = {'pts_bbox': bbox_pts[0]}
+    bev_feature = img_feats[0] if return_bev_feature else None
+    return result, bev_feature, inference_ms
 
 
 def main():
@@ -209,8 +244,8 @@ def main():
     model = init_model(cfg, checkpoint=args.checkpoint, device=args.device)
     batch = prepare_data(model, dataset, sample_index)
 
-    with torch.no_grad():
-        result = model(return_loss=False, rescale=True, **batch)[0]
+    result, _, inference_ms = run_inference(
+        model, batch, rescale=True, return_bev_feature=False)
 
     sample_meta = get_sample_meta(dataset, sample_index)
     detections = serialize_result(result, dataset.CLASSES, args.score_thr,
@@ -222,6 +257,7 @@ def main():
         'device': args.device,
         'score_thr': args.score_thr,
         'topk': args.topk,
+        'inference_ms': inference_ms,
         'sample': sample_meta,
         'num_detections': len(detections),
         'detections': detections,
@@ -241,6 +277,7 @@ def main():
     print(f'sample_index: {sample_index}')
     print(f'sample_token: {sample_meta["sample_token"]}')
     print(f'num_detections: {len(detections)}')
+    print(f'inference_ms: {inference_ms:.2f}')
     print(f'output_json: {out_path}')
 
 

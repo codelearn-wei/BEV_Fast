@@ -11,6 +11,12 @@ from mmdet3d.models.utils.grid_mask import GridMask
 from mmdet.models.backbones.resnet import ResNet
 
 
+def safe_inverse(matrix):
+    # Small pose transforms are cheap to invert on CPU and this avoids
+    # cuSOLVER/cuSPARSE initialization failures on some WSL GPU setups.
+    return torch.inverse(matrix.cpu()).to(matrix.device)
+
+
 @DETECTORS.register_module()
 class FastBEV(CenterPoint):
     r"""FastBEV paradigm for multi-camera 3D object detection.
@@ -83,8 +89,7 @@ class FastBEV(CenterPoint):
         keyego2global = ego2globals[:, 0,  ...].unsqueeze(1)
         # WSL + older PyTorch builds can hit cuSOLVER init errors here.
         # This matrix is tiny, so doing the inverse on CPU is a stable fallback.
-        global2keyego = torch.inverse(
-            keyego2global.double().cpu()).to(keyego2global.device)
+        global2keyego = safe_inverse(keyego2global.double())
         sensor2keyegos = \
             global2keyego @ ego2globals.double() @ sensor2egos.double()
         sensor2keyegos = sensor2keyegos.float()
@@ -296,7 +301,7 @@ class FastBEV4D(FastBEV):
         c12l0 = bda_.matmul(c12l0)
 
         # transformation from current ego frame to adjacent ego frame
-        l02l1 = c02l0.matmul(torch.inverse(c12l0))[:, 0, :, :].view(
+        l02l1 = c02l0.matmul(safe_inverse(c12l0))[:, 0, :, :].view(
             n, 1, 1, 4, 4)
         '''
           c02l0 * inv(c12l0)
@@ -316,7 +321,7 @@ class FastBEV4D(FastBEV):
         feat2bev[1, 2] = self.img_view_transformer.grid_lower_bound[1]
         feat2bev[2, 2] = 1
         feat2bev = feat2bev.view(1, 3, 3)
-        tf = torch.inverse(feat2bev).matmul(l02l1).matmul(feat2bev)
+        tf = safe_inverse(feat2bev).matmul(l02l1).matmul(feat2bev)
 
         # transform and normalize
         grid = tf.matmul(grid)
@@ -382,7 +387,7 @@ class FastBEV4D(FastBEV):
 
         # calculate the transformation from sweep sensor to key ego
         keyego2global = ego2globals[:, 0, 0, ...].unsqueeze(1).unsqueeze(1)
-        global2keyego = torch.inverse(keyego2global.double())
+        global2keyego = safe_inverse(keyego2global.double())
         sensor2keyegos = \
             global2keyego @ ego2globals.double() @ sensor2egos.double()
         sensor2keyegos = sensor2keyegos.float()
@@ -399,7 +404,7 @@ class FastBEV4D(FastBEV):
             ego2globals_adj = \
                 ego2globals_cv[:, 1:self.temporal_frame + 1, ...].double()
             curr2adjsensor = \
-                torch.inverse(ego2globals_adj @ sensor2egos_adj) \
+                safe_inverse(ego2globals_adj @ sensor2egos_adj) \
                 @ ego2globals_curr @ sensor2egos_curr
             curr2adjsensor = curr2adjsensor.float()
             curr2adjsensor = torch.split(curr2adjsensor, 1, 1)
