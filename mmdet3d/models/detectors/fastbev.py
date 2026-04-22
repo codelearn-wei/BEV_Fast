@@ -81,7 +81,10 @@ class FastBEV(CenterPoint):
 
         # calculate the transformation from sweep sensor to key ego
         keyego2global = ego2globals[:, 0,  ...].unsqueeze(1)
-        global2keyego = torch.inverse(keyego2global.double())
+        # WSL + older PyTorch builds can hit cuSOLVER init errors here.
+        # This matrix is tiny, so doing the inverse on CPU is a stable fallback.
+        global2keyego = torch.inverse(
+            keyego2global.double().cpu()).to(keyego2global.device)
         sensor2keyegos = \
             global2keyego @ ego2globals.double() @ sensor2egos.double()
         sensor2keyegos = sensor2keyegos.float()
@@ -556,4 +559,3 @@ class FastBEVTRT(FastBEV):
         input = self.prepare_inputs(input)
         coor = self.img_view_transformer.get_lidar_coor(*input[1:7])
         return self.img_view_transformer.voxel_pooling_prepare_v2(coor)
-

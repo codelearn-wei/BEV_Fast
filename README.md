@@ -53,6 +53,21 @@ source /home/ego_vehicle/miniconda3/etc/profile.d/conda.sh
 source ./activate_bev.sh
 ```
 
+如果你在 WSL 中使用 GPU，建议确认:
+
+```bash
+python -c "import torch; print(torch.cuda.is_available(), torch.cuda.device_count(), torch.version.cuda)"
+/usr/lib/wsl/lib/nvidia-smi
+```
+
+`activate_bev.sh` 里已经补了:
+
+```bash
+export LD_LIBRARY_PATH=/usr/lib/wsl/lib:$LD_LIBRARY_PATH
+```
+
+这样可以尽量避免 WSL 下 CUDA driver 运行时路径不完整的问题。
+
 ## 3. 推荐推理入口
 
 推荐把下载好的模型统一放在仓库根目录下的 `model/` 目录，例如:
@@ -152,6 +167,14 @@ python tools/fastbev_infer.py \
 ```bash
 outputs/fastbev_infer/b6b0d9f2f2e14a3aaa2c8aedeb1edb69.json
 ```
+
+如果在 WSL + GPU 环境里遇到类似下面的错误:
+
+```bash
+cusolverDnCreate(handle)
+```
+
+当前仓库已经在 `FastBEV.prepare_inputs()` 中把关键的 `4x4` 位姿逆矩阵计算改成 CPU 执行，再搬回原设备，避免这类 cuSOLVER 初始化问题阻塞推理。
 
 ## 5. JSON 输出格式
 
