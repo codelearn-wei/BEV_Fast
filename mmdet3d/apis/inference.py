@@ -60,17 +60,26 @@ def init_model(config, checkpoint=None, device='cuda:0'):
     model = build_model(config.model, test_cfg=config.get('test_cfg'))
     if checkpoint is not None:
         checkpoint = load_checkpoint(model, checkpoint, map_location='cpu')
-        if 'CLASSES' in checkpoint['meta']:
-            model.CLASSES = checkpoint['meta']['CLASSES']
-        else:
+        checkpoint_meta = checkpoint.get('meta', {}) if isinstance(
+            checkpoint, dict) else {}
+        if 'CLASSES' in checkpoint_meta:
+            model.CLASSES = checkpoint_meta['CLASSES']
+        elif hasattr(config, 'class_names'):
             model.CLASSES = config.class_names
-        if 'PALETTE' in checkpoint['meta']:  # 3D Segmentor
-            model.PALETTE = checkpoint['meta']['PALETTE']
+        else:
+            model.CLASSES = None
+        if 'PALETTE' in checkpoint_meta:  # 3D Segmentor
+            model.PALETTE = checkpoint_meta['PALETTE']
     model.cfg = config  # save the config in the model for convenience
+    logger = get_root_logger()
+    if device != 'cpu' and not torch.cuda.is_available():
+        logger.warning('CUDA device was requested but is unavailable. '
+                       'Falling back to CPU for inference.')
+        device = 'cpu'
+
     if device != 'cpu':
         torch.cuda.set_device(device)
     else:
-        logger = get_root_logger()
         logger.warning('Don\'t suggest using CPU device. '
                        'Some functions are not supported for now.')
     model.to(device)

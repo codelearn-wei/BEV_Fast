@@ -30,6 +30,7 @@
 - 因此本机不能直接编译 `bev_pool_v2` 的原生 CUDA 扩展
 - 仓库已经加入纯 PyTorch fallback，可继续做功能开发、流程验证和结果导出
 - 但这一路径推理速度会慢于原生 CUDA 扩展
+- 如果命令里指定 `--device cuda:0` 但当前环境无可用 GPU，脚本会自动回退到 CPU
 
 详细说明见 [LOCAL_SETUP.md](/home/ego_vehicle/MY_project/BEV_perception/advanced-fastbev-fastbev/LOCAL_SETUP.md)
 
@@ -53,6 +54,19 @@ source ./activate_bev.sh
 ```
 
 ## 3. 推荐推理入口
+
+推荐把下载好的模型统一放在仓库根目录下的 `model/` 目录，例如:
+
+```bash
+model/fastbev-r50-cbgs.pth
+model/fastbev-r50-cbgs-4d.pth
+```
+
+如果目录还没有，可以先创建:
+
+```bash
+mkdir -p model
+```
 
 后续开发优先使用这个脚本:
 
@@ -83,20 +97,20 @@ outputs/fastbev_infer/
 ### 4.1 按索引推理
 
 ```bash
-python tools/fastbev_infer.py \
-  configs/fastbev/paper/fastbev-r50-cbgs.py \
-  work_dirs/fastbev-r50-cbgs/epoch_20_ema.pth \
-  --sample-index 10 \
+python tools/fastbev_infer.py 
+  configs/fastbev/paper/fastbev-r50-cbgs.py 
+  model/fastbev-r50-cbgs.pth
+  --sample-index 10 
   --device cuda:0
 ```
 
 ### 4.2 按 nuScenes sample token 推理
 
 ```bash
-python tools/fastbev_infer.py \
-  configs/fastbev/paper/fastbev-r50-cbgs.py \
-  work_dirs/fastbev-r50-cbgs/epoch_20_ema.pth \
-  --sample-token <sample_token> \
+python tools/fastbev_infer.py 
+  configs/fastbev/paper/fastbev-r50-cbgs.py 
+  work_dirs/fastbev-r50-cbgs/epoch_20_ema.pth 
+  --sample-token <sample_token> 
   --device cuda:0
 ```
 
@@ -120,6 +134,24 @@ python tools/fastbev_infer.py \
 - `--out-dir`: 默认 JSON 输出目录
 - `--out`: 显式指定 JSON 文件路径
 - `--cfg-options`: 临时覆盖配置项
+
+### 4.5 当前已验证可运行
+
+下面这条命令已经在当前工程里跑通，并成功导出 JSON:
+
+```bash
+python tools/fastbev_infer.py \
+  configs/fastbev/paper/fastbev-r50-cbgs.py \
+  model/fastbev-r50-cbgs.pth \
+  --sample-index 10 \
+  --device cuda:0
+```
+
+输出示例:
+
+```bash
+outputs/fastbev_infer/b6b0d9f2f2e14a3aaa2c8aedeb1edb69.json
+```
 
 ## 5. JSON 输出格式
 
@@ -187,7 +219,65 @@ python tools/test.py \
 4. 增加 BEV 可视化和多相机叠加可视化
 5. 增加面向下游模块的标准输出接口
 
-## 9. 模型与结果参考
+## 9. 分阶段推进计划
+
+为了把工程逐步推进到“感知实时推理”，建议按下面 4 个阶段走:
+
+### 阶段 1：单样本推理打通
+
+目标:
+
+- 配置、模型、样本读取全部跑通
+- 输出稳定的结构化 JSON
+- 修完 checkpoint、CPU fallback、旧依赖兼容问题
+
+当前状态:
+
+- 已完成
+
+### 阶段 2：结果工程化
+
+目标:
+
+- 把 `box_3d` 拆成更直接可用的字段
+- 增加类别过滤、分数过滤、距离过滤
+- 增加批量推理与结果汇总
+
+推荐下一步:
+
+- 增加 `--class-names`
+- 增加 `--max-distance`
+- 增加批量 token / index 列表输入
+
+### 阶段 3：在线推理接口
+
+目标:
+
+- 把推理脚本改成长期运行的服务
+- 输入一帧多相机数据，输出检测结果 JSON
+- 为下游模块提供稳定接口
+
+推荐形式:
+
+- Python service
+- FastAPI / Flask
+- 单进程单模型常驻内存
+
+### 阶段 4：实时优化
+
+目标:
+
+- 恢复 GPU 推理
+- 评估 PyTorch 实时性能
+- 继续推进 TensorRT / ONNX / 缓存优化
+
+当前主要阻塞:
+
+- 本机当前 PyTorch 无法访问可用 NVIDIA driver
+- 当前 `bev_pool_v2` 使用的是纯 PyTorch fallback，不是原生 CUDA 扩展
+- 所以当前适合功能开发，不适合真实实时性能评估
+
+## 10. 模型与结果参考
 
 ![](./resources/fastbev++_exps.jpg)
 ![](./resources/fastbev++_result.png)
@@ -199,7 +289,7 @@ python tools/test.py \
 - [fastbev-r101-cbgs-4d-longterm](https://drive.google.com/drive/folders/1JLcU96Oimk7wSZLi7-FeImUGD_1fXWG1)
 - [fastbev-r101-cbgs-4d-longterm-depth](https://drive.google.com/drive/folders/1RG2hFFu0germP-8sIvMYpv-K-eVER6yB)
 
-## 10. 致谢
+## 11. 致谢
 
 本项目建立在以下开源工作之上:
 

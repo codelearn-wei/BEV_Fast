@@ -20,6 +20,14 @@ except ImportError:
 from mmdet3d.apis import init_model
 
 
+def normalize_device(device):
+    if device != 'cpu' and not torch.cuda.is_available():
+        print('warning: cuda device requested but unavailable, '
+              'falling back to cpu')
+        return 'cpu'
+    return device
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description='FastBEV single-sample inference and JSON export')
@@ -109,9 +117,19 @@ def prepare_data(model, dataset, sample_index):
     if next(model.parameters()).is_cuda:
         batch = scatter(batch, [device.index])[0]
     else:
-        for key, value in list(batch.items()):
-            if isinstance(value, list) and value:
-                batch[key] = value[0].data
+        if 'img_metas' in batch and batch['img_metas']:
+            batch['img_metas'] = batch['img_metas'][0].data[0]
+        if 'points' in batch and batch['points']:
+            batch['points'] = batch['points'][0].data[0]
+        if 'img_inputs' in batch and batch['img_inputs']:
+            batch['img_inputs'] = batch['img_inputs'][0]
+
+    if 'img_metas' in batch and batch['img_metas'] is not None:
+        batch['img_metas'] = [batch['img_metas']]
+    if 'points' in batch and batch['points'] is not None:
+        batch['points'] = [batch['points']]
+    if 'img_inputs' in batch and batch['img_inputs'] is not None:
+        batch['img_inputs'] = [batch['img_inputs']]
     return batch
 
 
@@ -170,6 +188,7 @@ def serialize_result(result, class_names, score_thr, topk):
 
 def main():
     args = parse_args()
+    args.device = normalize_device(args.device)
 
     os.environ.setdefault('MPLCONFIGDIR', str(Path('outputs/.mplconfig').resolve()))
     os.makedirs(os.environ['MPLCONFIGDIR'], exist_ok=True)
