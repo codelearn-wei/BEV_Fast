@@ -124,12 +124,20 @@ def prepare_data(model, dataset, sample_index):
         if 'img_inputs' in batch and batch['img_inputs']:
             batch['img_inputs'] = batch['img_inputs'][0]
 
-    if 'img_metas' in batch and batch['img_metas'] is not None:
-        batch['img_metas'] = [batch['img_metas']]
-    if 'points' in batch and batch['points'] is not None:
-        batch['points'] = [batch['points']]
-    if 'img_inputs' in batch and batch['img_inputs'] is not None:
-        batch['img_inputs'] = [batch['img_inputs']]
+    def ensure_aug_list(value):
+        if value is None:
+            return None
+        if isinstance(value, list) and len(value) > 0 and isinstance(
+                value[0], list):
+            return value
+        return [value]
+
+    if 'img_metas' in batch:
+        batch['img_metas'] = ensure_aug_list(batch['img_metas'])
+    if 'points' in batch:
+        batch['points'] = ensure_aug_list(batch['points'])
+    if 'img_inputs' in batch:
+        batch['img_inputs'] = ensure_aug_list(batch['img_inputs'])
     return batch
 
 
