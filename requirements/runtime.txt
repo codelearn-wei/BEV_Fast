@@ -1,7 +1,7 @@
 lyft_dataset_sdk
 networkx>=2.2,<2.3
 numba==0.53.0
-numpy
+numpy<1.21
 nuscenes-devkit
 plyfile
 scikit-image

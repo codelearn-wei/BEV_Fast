@@ -4,7 +4,6 @@ from .bevdet import BEVDepth4D, BEVDet, BEVDet4D, BEVDetTRT, BEVStereo4D
 from .fastbev import FastBEV, FastBEV4D, FastBEVTRT
 from .bevdet_occ import BEVStereo4DOCC
 from .centerpoint import CenterPoint
-from .dal import DAL
 from .dynamic_voxelnet import DynamicVoxelNet
 from .fcos_mono3d import FCOSMono3D
 from .groupfree3dnet import GroupFree3DNet
@@ -23,6 +22,11 @@ from .ssd3dnet import SSD3DNet
 from .votenet import VoteNet
 from .voxelnet import VoxelNet
 
+try:
+    from .dal import DAL
+except ImportError:
+    DAL = None
+
 __all__ = [
     'Base3DDetector', 'VoxelNet', 'DynamicVoxelNet', 'MVXTwoStageDetector',
     'DynamicMVXFasterRCNN', 'MVXFasterRCNN', 'PartA2', 'VoteNet', 'H3DNet',
@@ -32,3 +36,6 @@ __all__ = [
     'BEVDetTRT', 'BEVStereo4D', 'BEVStereo4DOCC', 
     'FastBEV', 'FastBEV4D', 'FastBEVTRT'
 ]
+
+if DAL is not None:
+    __all__.append('DAL')
