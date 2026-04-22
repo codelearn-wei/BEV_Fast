@@ -11,6 +11,12 @@ from torch.cuda.amp.autocast_mode import autocast
 from ..builder import NECKS
 
 
+def safe_inverse(matrix):
+    # Small rigid transforms are safe to invert on CPU and this avoids
+    # cuSOLVER/cuSPARSE init issues on some WSL GPU setups.
+    return torch.inverse(matrix.cpu()).to(matrix.device)
+
+
 @NECKS.register_module()
 class FastrayTransformer(BaseModule):
     
@@ -120,7 +126,7 @@ class FastrayTransformer(BaseModule):
 
         new_cam2imgs = torch.eye(4).unsqueeze(0).unsqueeze(0).repeat(*sensor2ego.shape[:2], 1, 1).to(sensor2ego.device)
         new_cam2imgs[:, :, :3, :3] = cam2imgs
-        camego2imgs = new_cam2imgs.matmul(torch.inverse(sensor2ego))
+        camego2imgs = new_cam2imgs.matmul(safe_inverse(sensor2ego))
 
         batch_pre_voxel_coors_list = []
         batch_pre_img_coors_list = []
@@ -133,7 +139,7 @@ class FastrayTransformer(BaseModule):
 
             # inverse aug
             cur_coords = self.voxel_coords - cur_lidar_aug_matrix[:3, 3].view(1,3)
-            cur_coords = torch.inverse(cur_lidar_aug_matrix[:3, :3]).matmul(
+            cur_coords = safe_inverse(cur_lidar_aug_matrix[:3, :3]).matmul(
                 cur_coords.transpose(1, 0))
 
             # camego2image
@@ -319,4 +325,3 @@ class FastrayTransformer(BaseModule):
     
     def get_mlp_input(self, rot, tran, intrin, post_rot, post_tran, bda):
         return None
-
