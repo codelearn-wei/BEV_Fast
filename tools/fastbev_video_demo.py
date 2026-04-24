@@ -15,7 +15,8 @@ from mmcv import DictAction
 from mmdet3d.datasets import build_dataset
 
 from fastbev_infer import (get_sample_meta, normalize_device, prepare_cfg,
-                           prepare_data, resolve_sample_index, run_inference)
+                           prepare_data, resolve_sample_index, run_inference,
+                           serialize_result)
 from mmdet3d.apis import init_model
 
 try:
@@ -82,8 +83,8 @@ def alpha_blend(base, overlay, alpha):
 def parse_args():
     parser = argparse.ArgumentParser(
         description='FastBEV multi-frame visualization and video export')
-    parser.add_argument('config', help='config file path')
-    parser.add_argument('checkpoint', help='checkpoint file path')
+    parser.add_argument('config', nargs='?', help='config file path')
+    parser.add_argument('checkpoint', nargs='?', help='checkpoint file path')
     parser.add_argument(
         '--start-index',
         type=int,
@@ -145,11 +146,27 @@ def parse_args():
         action='store_true',
         help='save rendered frames as images')
     parser.add_argument(
+        '--save-sequence-json',
+        action='store_true',
+        help='save per-frame visualization payload json for replay')
+    parser.add_argument(
+        '--frames-json',
+        type=str,
+        default=None,
+        help='render video directly from a saved sequence json payload')
+    parser.add_argument(
         '--cfg-options',
         nargs='+',
         action=DictAction,
         help='override config settings with key=value pairs')
     return parser.parse_args()
+
+
+def validate_args(args):
+    if args.frames_json is not None:
+        return
+    if not args.config or not args.checkpoint:
+        raise ValueError('config and checkpoint are required unless --frames-json is set.')
 
 
 def draw_title(image, title):
@@ -211,6 +228,14 @@ def bev_feature_to_heatmap(bev_feature, bev_size):
     heat = cv2.resize(heat, (bev_size, bev_size), interpolation=cv2.INTER_CUBIC)
     heat = cv2.applyColorMap(heat, cv2.COLORMAP_TURBO)
     return draw_title(heat, 'BEV Feature Heatmap')
+
+
+def save_heatmap_image(heatmap, out_dir, render_idx, sample_token):
+    heatmap_dir = out_dir / 'bev_heatmaps'
+    heatmap_dir.mkdir(parents=True, exist_ok=True)
+    heatmap_path = heatmap_dir / f'{render_idx:05d}_{sample_token}.png'
+    cv2.imwrite(str(heatmap_path), heatmap)
+    return heatmap_path
 
 
 def metric_to_canvas(points_xy, bounds, canvas_size):
@@ -404,6 +429,17 @@ def filter_detection_result(result, class_names, score_thr, topk):
     return box_tensor.numpy(), corners.numpy(), scores.numpy(), labels.numpy()
 
 
+def filter_serialized_detections(detections, score_thr, topk):
+    filtered = [
+        det for det in detections
+        if det['score'] >= score_thr and det['label_name'] in PRIMARY_CLASSES
+    ]
+    filtered.sort(key=lambda item: item['score'], reverse=True)
+    if topk is not None:
+        filtered = filtered[:topk]
+    return filtered
+
+
 def torch_argsort_desc(scores):
     return torch.argsort(scores, descending=True)
 
@@ -488,6 +524,90 @@ def render_bev_boxes_panel(result, class_names, bounds, bev_size, score_thr,
     return draw_title(canvas, 'Top-down BEV Obstacles')
 
 
+def render_bev_boxes_panel_from_detections(detections, bounds, bev_size,
+                                           ego_motion):
+    canvas = render_bev_background(bounds, bev_size)
+    forward_min, forward_max, left_min, left_max = bounds
+    order = np.argsort([det['score'] for det in detections])
+    legend_counts = {}
+
+    for idx in order:
+        det = detections[idx]
+        box = np.asarray(det['box_3d'], dtype=np.float32)
+        center = np.asarray(det['center_xyz'][:2], dtype=np.float32)
+        dx, dy = float(det['size_xyz'][0]), float(det['size_xyz'][1])
+        yaw = float(det['yaw'])
+        cos_yaw = np.cos(yaw)
+        sin_yaw = np.sin(yaw)
+        rot = np.array([[cos_yaw, -sin_yaw], [sin_yaw, cos_yaw]],
+                       dtype=np.float32)
+        half = np.array([[dx / 2, dy / 2], [dx / 2, -dy / 2],
+                         [-dx / 2, -dy / 2], [-dx / 2, dy / 2]],
+                        dtype=np.float32)
+        bottom = half @ rot.T + center[None, :]
+        bottom_canvas = metric_to_canvas(bottom, bounds, bev_size)
+        center_xy = metric_to_canvas(center[None, :], bounds, bev_size)[0]
+        heading_xy = (np.array([dx / 2, 0.0], dtype=np.float32) @ rot.T) + center
+        heading_canvas = metric_to_canvas(heading_xy[None, :], bounds, bev_size)[0]
+        velocity = np.asarray(det.get('velocity_xy', [0.0, 0.0]), dtype=np.float32)
+        velocity_tip = center + velocity * 1.5
+        velocity_canvas = metric_to_canvas(
+            np.array([velocity_tip], dtype=np.float32), bounds, bev_size)[0]
+
+        label_name = det['label_name']
+        color = CLASS_COLOR_BY_NAME.get(
+            label_name, CLASS_COLORS[int(det['label']) % len(CLASS_COLORS)])
+
+        overlay = canvas.copy()
+        cv2.fillConvexPoly(overlay, bottom_canvas, color)
+        canvas = alpha_blend(canvas, overlay, 0.22)
+
+        for start, end in [(0, 1), (1, 2), (2, 3), (3, 0)]:
+            cv2.line(canvas, tuple(bottom_canvas[start]),
+                     tuple(bottom_canvas[end]), color, 3, cv2.LINE_AA)
+        cv2.circle(canvas, tuple(center_xy), 3, color, -1, cv2.LINE_AA)
+        cv2.arrowedLine(canvas, tuple(center_xy), tuple(heading_canvas), color,
+                        3, cv2.LINE_AA, tipLength=0.25)
+        if np.linalg.norm(velocity) > 0.2:
+            cv2.arrowedLine(canvas, tuple(center_xy), tuple(velocity_canvas),
+                            (245, 245, 245), 2, cv2.LINE_AA, tipLength=0.22)
+
+        legend_counts[label_name] = legend_counts.get(label_name, 0) + 1
+        text = f'{label_name} {det["score"]:.2f}'
+        anchor = tuple(bottom_canvas[0] + np.array([6, -6]))
+        draw_text_tag(canvas, text, anchor, color)
+
+    center = metric_to_canvas(np.array([[0.0, 0.0]], dtype=np.float32),
+                              bounds, bev_size)[0]
+    ego_motion_tip = metric_to_canvas(
+        np.array([[ego_motion['motion_xy'][0] * 2.0,
+                   ego_motion['motion_xy'][1] * 2.0]], dtype=np.float32),
+        bounds, bev_size)[0]
+    if ego_motion['speed_mps'] > 0.2:
+        cv2.arrowedLine(canvas, tuple(center), tuple(ego_motion_tip),
+                        (255, 255, 255), 3, cv2.LINE_AA, tipLength=0.22)
+
+    speed_text = f'ego speed {ego_motion["speed_kph"]:.1f} km/h'
+    cv2.putText(canvas, speed_text, (14, bev_size - 46),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.72, (245, 245, 245), 2,
+                cv2.LINE_AA)
+    cv2.putText(canvas,
+                f'front:[{forward_min:.0f},{forward_max:.0f}]m left:[{left_min:.0f},{left_max:.0f}]m',
+                (14, bev_size - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.48,
+                (210, 210, 210), 1, cv2.LINE_AA)
+    legend_y = 58
+    for label_name, count in sorted(legend_counts.items(),
+                                    key=lambda item: (-item[1], item[0]))[:6]:
+        color = CLASS_COLOR_BY_NAME.get(label_name, (180, 180, 180))
+        cv2.rectangle(canvas, (bev_size - 210, legend_y - 14),
+                      (bev_size - 194, legend_y + 2), color, -1)
+        cv2.putText(canvas, f'{label_name}: {count}', (bev_size - 186, legend_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, (240, 240, 240), 1,
+                    cv2.LINE_AA)
+        legend_y += 24
+    return draw_title(canvas, 'Top-down BEV Obstacles')
+
+
 def compose_side_panel(bev_heatmap, bev_boxes):
     panel = bev_boxes.copy()
     inset = cv2.resize(
@@ -535,12 +655,133 @@ def resolve_frame_indices(dataset, start_index, start_token, num_frames, stride)
     return indices
 
 
+def serialize_ego_motion(ego_motion):
+    return {
+        'speed_mps': float(ego_motion['speed_mps']),
+        'speed_kph': float(ego_motion['speed_kph']),
+        'motion_xy': [float(x) for x in ego_motion['motion_xy'].tolist()],
+    }
+
+
+def build_sequence_record(render_idx, sample_index, sample_meta, inference_ms,
+                          num_detections, ego_motion, detections,
+                          heatmap_path):
+    return {
+        'frame_index': render_idx,
+        'sample_index': sample_index,
+        'sample': sample_meta,
+        'inference_ms': float(inference_ms),
+        'num_detections': int(num_detections),
+        'ego_motion': serialize_ego_motion(ego_motion),
+        'detections': detections,
+        'bev_heatmap_path': str(heatmap_path) if heatmap_path is not None else None,
+    }
+
+
+def load_heatmap_for_replay(record, bev_size):
+    heatmap_path = record.get('bev_heatmap_path')
+    if not heatmap_path:
+        return draw_title(np.zeros((bev_size, bev_size, 3), dtype=np.uint8),
+                          'BEV Feature Heatmap')
+    heatmap = cv2.imread(str(heatmap_path))
+    if heatmap is None:
+        heatmap = np.zeros((bev_size, bev_size, 3), dtype=np.uint8)
+        cv2.putText(heatmap, 'heatmap missing', (20, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2,
+                    cv2.LINE_AA)
+        return draw_title(heatmap, 'BEV Feature Heatmap')
+    if heatmap.shape[:2] != (bev_size, bev_size):
+        heatmap = cv2.resize(heatmap, (bev_size, bev_size),
+                             interpolation=cv2.INTER_AREA)
+    return heatmap
+
+
+def render_sequence_record(record, bounds, bev_size, cam_width, score_thr, topk,
+                           avg_ms):
+    sample_meta = record['sample']
+    ego_motion = {
+        'speed_mps': float(record['ego_motion']['speed_mps']),
+        'speed_kph': float(record['ego_motion']['speed_kph']),
+        'motion_xy': np.asarray(record['ego_motion']['motion_xy'],
+                                dtype=np.float32),
+    }
+    detections = filter_serialized_detections(
+        record.get('detections', []), score_thr, topk)
+    camera_grid = compose_camera_grid(sample_meta, cam_width)
+    bev_heatmap = load_heatmap_for_replay(record, bev_size)
+    bev_boxes = render_bev_boxes_panel_from_detections(
+        detections, bounds, bev_size, ego_motion)
+    side_panel = compose_side_panel(bev_heatmap, bev_boxes)
+    if side_panel.shape[0] != camera_grid.shape[0]:
+        side_panel = cv2.resize(side_panel,
+                                (side_panel.shape[1], camera_grid.shape[0]))
+    frame = np.concatenate([camera_grid, side_panel], axis=1)
+    frame = overlay_runtime_info(
+        frame,
+        sample_meta,
+        int(record['frame_index']),
+        float(record['inference_ms']),
+        float(avg_ms),
+        len(detections),
+        ego_motion['speed_kph'])
+    return frame
+
+
+def replay_sequence_json(args):
+    payload = json.loads(Path(args.frames_json).read_text(encoding='utf-8'))
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    frames_dir = out_dir / 'frames'
+    if args.save_frames:
+        frames_dir.mkdir(parents=True, exist_ok=True)
+
+    bounds = tuple(payload.get('bounds', [
+        -EGO_BACKWARD_RANGE, EGO_FORWARD_RANGE, -EGO_SIDE_RANGE, EGO_SIDE_RANGE
+    ]))
+    records = payload['frames']
+    video_writer = None
+    stats = []
+
+    for record in records:
+        stats.append(float(record['inference_ms']))
+        valid_times = stats[min(args.warmup, len(stats)):]
+        avg_ms = float(np.mean(valid_times)) if valid_times else float(record['inference_ms'])
+        frame = render_sequence_record(
+            record, bounds, args.bev_size, args.cam_width, args.score_thr,
+            args.topk, avg_ms)
+        if video_writer is None:
+            video_path = out_dir / args.video_name
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            video_writer = cv2.VideoWriter(
+                str(video_path), fourcc, args.fps, (frame.shape[1], frame.shape[0]))
+        video_writer.write(frame)
+        if args.save_frames:
+            sample_token = record['sample']['sample_token']
+            frame_path = frames_dir / f'{int(record["frame_index"]):05d}_{sample_token}.jpg'
+            cv2.imwrite(str(frame_path), frame)
+        print(
+            f'replay_frame={int(record["frame_index"]):03d} '
+            f'sample_index={record["sample_index"]} '
+            f'token={record["sample"]["sample_token"]} '
+            f'inference_ms={float(record["inference_ms"]):.2f} '
+            f'detections={len(filter_serialized_detections(record.get("detections", []), args.score_thr, args.topk))}')
+
+    if video_writer is not None:
+        video_writer.release()
+    print(f'video_path: {out_dir / args.video_name}')
+
+
 def main():
     args = parse_args()
+    validate_args(args)
     args.device = normalize_device(args.device)
 
     os.environ.setdefault('MPLCONFIGDIR', str(Path('outputs/.mplconfig').resolve()))
     os.makedirs(os.environ['MPLCONFIGDIR'], exist_ok=True)
+
+    if args.frames_json is not None:
+        replay_sequence_json(args)
+        return
 
     cfg = prepare_cfg(args.config, args.cfg_options)
     setup_multi_processes(cfg)
@@ -558,6 +799,7 @@ def main():
 
     bounds = get_bev_bounds(model)
     stats = []
+    sequence_records = []
     video_writer = None
 
     for render_idx, sample_index in enumerate(frame_indices):
@@ -584,9 +826,26 @@ def main():
 
         camera_grid = compose_camera_grid(sample_meta, args.cam_width)
         bev_heatmap = bev_feature_to_heatmap(bev_feature, args.bev_size)
+        heatmap_path = None
+        if args.save_sequence_json:
+            heatmap_path = save_heatmap_image(
+                bev_heatmap, out_dir, render_idx, sample_meta['sample_token'])
         bev_boxes = render_bev_boxes_panel(result, dataset.CLASSES, bounds,
                                            args.bev_size, args.score_thr, args.topk,
                                            ego_motion)
+        detections = serialize_result(
+            result, dataset.CLASSES, args.score_thr, args.topk)
+        if args.save_sequence_json:
+            sequence_records.append(
+                build_sequence_record(
+                    render_idx=render_idx,
+                    sample_index=sample_index,
+                    sample_meta=sample_meta,
+                    inference_ms=inference_ms,
+                    num_detections=num_detections,
+                    ego_motion=ego_motion,
+                    detections=detections,
+                    heatmap_path=heatmap_path))
         side_panel = compose_side_panel(bev_heatmap, bev_boxes)
         if side_panel.shape[0] != camera_grid.shape[0]:
             side_panel = cv2.resize(side_panel,
@@ -636,6 +895,22 @@ def main():
     summary_path = out_dir / 'summary.json'
     summary_path.write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
+    if args.save_sequence_json:
+        sequence_payload = {
+            'config': args.config,
+            'checkpoint': args.checkpoint,
+            'device': args.device,
+            'score_thr': args.score_thr,
+            'topk': args.topk,
+            'bounds': list(bounds),
+            'video_fps': args.fps,
+            'frames': sequence_records,
+        }
+        sequence_json_path = out_dir / 'sequence_visualization.json'
+        sequence_json_path.write_text(
+            json.dumps(sequence_payload, ensure_ascii=False, indent=2),
+            encoding='utf-8')
+        print(f'sequence_json: {sequence_json_path}')
 
     print(f'video_path: {out_dir / args.video_name}')
     print(f'summary_json: {summary_path}')
