@@ -1,6 +1,9 @@
 import time
 from typing import Dict, Optional, Sequence, Union
 
+from tools.trt_env import bootstrap_tensorrt_import
+
+bootstrap_tensorrt_import()
 import tensorrt as trt
 import torch
 import torch.onnx
@@ -34,6 +37,16 @@ def parse_args():
                         help='use prefetch to accelerate the data loading, '
                              'the inference speed is sightly degenerated due '
                              'to the computational occupancy of prefetch')
+    parser.add_argument(
+        '--sample-index',
+        default=0,
+        type=int,
+        help='sample index used for engine-only benchmarking')
+    parser.add_argument(
+        '--full-pipeline',
+        action='store_true',
+        help='benchmark the full dataloader + coordinate-prep path instead of '
+             'reusing one prepared sample')
     args = parser.parse_args()
     return args
 
@@ -88,6 +101,9 @@ class TRTWrapper(torch.nn.Module):
         bindings = [None] * (len(self._input_names) + len(self._output_names))
         for input_name, input_tensor in inputs.items():
             idx = self.engine.get_binding_index(input_name)
+            input_dtype = torch_dtype_from_trt(self.engine.get_binding_dtype(idx))
+            if input_tensor.dtype != input_dtype:
+                input_tensor = input_tensor.to(dtype=input_dtype)
             self.context.set_binding_shape(idx, tuple(input_tensor.shape))
             bindings[idx] = input_tensor.contiguous().data_ptr()
 
@@ -109,6 +125,27 @@ class TRTWrapper(torch.nn.Module):
 
 def get_plugin_names():
     return [pc.name for pc in trt.get_plugin_registry().plugin_creator_list]
+
+
+def prepare_engine_inputs(model, data):
+    with torch.no_grad():
+        prepared_inputs = [d.cuda() for d in data['img_inputs'][0]]
+        prepared_inputs = model.prepare_inputs(prepared_inputs)
+        img_feat, _ = model.image_encoder(prepared_inputs[0])
+        input_list = [img_feat] + list(prepared_inputs[1:7])
+        _, coors_img_list, coors_depth_list = \
+            model.img_view_transformer.get_fastray_input(input_list)
+    return dict(
+        img=prepared_inputs[0][0].cuda().contiguous(),
+        coors_img=coors_img_list[0].contiguous(),
+        coors_depth=coors_depth_list[0].contiguous())
+
+
+def get_loader_sample(data_loader, sample_index):
+    for idx, data in enumerate(data_loader):
+        if idx == sample_index:
+            return data
+    raise IndexError(f'sample-index out of range for dataloader: {sample_index}')
 
 
 def main():
@@ -156,31 +193,42 @@ def main():
     num_warmup = 50
     pure_inf_time = 0
 
-    temp_coors = []
     # benchmark with several samples and take the average
     results = list()
-    for i, data in tqdm(enumerate(data_loader), total=len(data_loader)):
-        if i == 0:
-            with torch.no_grad():
-                demo_img, _ = model.image_encoder(data['img_inputs'][0][0].cuda())
-                input = [demo_img] + [d.cuda() for d in data['img_inputs'][0][1:] + data['lidar2image']]
-                bev_feat = model.img_view_transformer(input)[0]
-        input = [demo_img] + [d.cuda() for d in data['img_inputs'][0][1:] + data['lidar2image']]
-        is_match = False
-        for tmp_input, tmp_coors in temp_coors:
-            if False not in [torch.all(input[tmp_idx] == tmp_input[tmp_idx]) for tmp_idx in [1,3,4,5,6,7]]:
-                is_match = True
-                break
-        if is_match:
-            coors = tmp_coors
-        else:
-            coors = model.img_view_transformer.get_fastray_input(input)[1][0]
-            temp_coors.append([input, coors])
+    if not args.full_pipeline and not args.eval:
+        data = get_loader_sample(data_loader, args.sample_index)
+        engine_inputs = prepare_engine_inputs(model, data)
+        print('Benchmark mode: engine-only')
+        print(f'Reusing prepared sample index: {args.sample_index}')
 
-        img = data['img_inputs'][0][0][0].cuda()
+        for i in tqdm(range(args.samples), total=args.samples):
+            torch.cuda.synchronize()
+            start_time = time.perf_counter()
+            _ = trt_model.forward(engine_inputs)
+            torch.cuda.synchronize()
+            elapsed = time.perf_counter() - start_time
+
+            if i >= num_warmup:
+                pure_inf_time += elapsed
+                if (i + 1) % 50 == 0:
+                    fps = (i + 1 - num_warmup) / pure_inf_time
+                    print(f'Done image [{i + 1:<3}/ {args.samples}], '
+                          f'fps: {fps:.2f} img / s')
+
+        fps = (args.samples - num_warmup) / pure_inf_time
+        print(f'Overall \nfps: {fps:.2f} img / s '
+              f'\ninference time: {1000/fps:.2f} ms')
+        return fps
+
+    print('Benchmark mode: full-pipeline')
+    print('This includes dataloader and coordinate preparation, so it is '
+          'expected to be much slower than pure TensorRT engine latency.')
+    for i, data in tqdm(enumerate(data_loader), total=len(data_loader)):
+        engine_inputs = prepare_engine_inputs(model, data)
+
         torch.cuda.synchronize()
         start_time = time.perf_counter()
-        trt_output = trt_model.forward(dict(img=img, coors=coors))
+        trt_output = trt_model.forward(engine_inputs)
 
         # postprocessing
         if args.postprocessing:
@@ -212,7 +260,7 @@ def main():
             print(f'Overall \nfps: {fps:.2f} img / s '
                   f'\ninference time: {1000/fps:.2f} ms')
             if not args.eval:
-                return
+                return fps
 
     assert args.eval
     eval_kwargs = cfg.get('evaluation', {}).copy()

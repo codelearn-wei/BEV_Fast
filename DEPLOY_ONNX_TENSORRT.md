@@ -147,9 +147,9 @@ trtexec \
 有了 engine 后，使用仓库自带脚本测速:
 
 ```bash
-python tools/analysis_tools/benchmark_trt_fastbev.py \
-  configs/fastbev/paper/fastbev-r50-cbgs.py \
-  outputs/deploy/fastbev_fp16.engine \
+python tools/analysis_tools/benchmark_trt_fastbev.py 
+  configs/fastbev/paper/fastbev-r50-cbgs.py 
+  outputs/deploy/fastbev_fp16.engine 
   --samples 200
 ```
 
@@ -167,10 +167,10 @@ python tools/analysis_tools/benchmark_trt_fastbev.py \
 ### 单帧
 
 ```bash
-python tools/fastbev_infer.py \
-  configs/fastbev/paper/fastbev-r50-cbgs.py \
-  model/fastbev-r50-cbgs.pth \
-  --sample-index 10 \
+python tools/fastbev_infer.py 
+  configs/fastbev/paper/fastbev-r50-cbgs.py 
+  model/fastbev-r50-cbgs.pth 
+  --sample-index 10 
   --device cuda:0
 ```
 
@@ -183,11 +183,11 @@ inference_ms: xxx
 ### 连续帧
 
 ```bash
-python tools/fastbev_video_demo.py \
-  configs/fastbev/paper/fastbev-r50-cbgs.py \
-  model/fastbev-r50-cbgs.pth \
-  --start-index 10 \
-  --num-frames 30 \
+python tools/fastbev_video_demo.py 
+  configs/fastbev/paper/fastbev-r50-cbgs.py 
+  model/fastbev-r50-cbgs.pth 
+  --start-index 10 
+  --num-frames 30 
   --device cuda:0
 ```
 

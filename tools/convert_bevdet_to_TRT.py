@@ -19,6 +19,9 @@ import mmcv
 import numpy as np
 import onnx
 import pycuda.driver as cuda
+from trt_env import bootstrap_tensorrt_import
+
+bootstrap_tensorrt_import()
 import tensorrt as trt
 import torch
 import tqdm

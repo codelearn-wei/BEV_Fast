@@ -97,6 +97,19 @@ def parse_args():
         action='store_true',
         help='Whether to fuse conv and bn, this will slightly increase'
         'the inference speed')
+    parser.add_argument(
+        '--sample-index',
+        type=int,
+        default=0,
+        help='dataset sample index used as the export example')
+    parser.add_argument(
+        '--dynamic-coors',
+        action='store_true',
+        help='export ONNX with dynamic axes for coors_img/coors_depth')
+    parser.add_argument(
+        '--skip-simplify',
+        action='store_true',
+        help='skip onnxsim simplify step to avoid OOM on large exports')
     args = parser.parse_args()
     return args
 
@@ -353,45 +366,77 @@ def main():
     model.eval()
 
     # import ipdb; ipdb.set_trace()
+    export_data = None
     for i, data in enumerate(data_loader):
-        if i == 0:
-            model.img_view_transformer.accelerate = False
-            with torch.no_grad():
-                img, _ = model.image_encoder(data['img_inputs'][0][0].cuda())
-                input = [img] + [d.cuda() for d in data['img_inputs'][0][1:]]
-                bev_feat_1 = model.img_view_transformer(input)[0]
-            model.img_view_transformer.accelerate = True
-            with torch.no_grad():
-                img, _ = model.image_encoder(data['img_inputs'][0][0].cuda())
-                input = [img] + [d.cuda() for d in data['img_inputs'][0][1:]]
-                bev_feat = model.img_view_transformer(input)[0]
-            assert torch.all(bev_feat_1 == bev_feat)
-            continue
-        img = data['img_inputs'][0][0][0].cuda()
-        _, coors_img, coors_depth = model.img_view_transformer.get_fastray_input(input)
-        coors_img, coors_depth = coors_img[0], coors_depth[0]
-        with torch.no_grad():
-            torch.onnx.export(
-                model,
-                (img.float().contiguous(), coors_img.contiguous(), coors_depth.contiguous()),
-                args.work_dir + model_prefix + '.onnx',
-                opset_version=11,
-                input_names=['img', 'coors_img', 'coors_depth'],
-                output_names=[f'output_{j}' for j in
-                            range(6 * len(model.pts_bbox_head.task_heads))])
-        break
+        if i == args.sample_index:
+            export_data = data
+            break
+    if export_data is None:
+        raise IndexError(f'sample-index out of range: {args.sample_index}')
+
+    model.img_view_transformer.accelerate = False
+    with torch.no_grad():
+        prepared_inputs = [d.cuda() for d in export_data['img_inputs'][0]]
+        prepared_inputs = model.prepare_inputs(prepared_inputs)
+        img_feat, _ = model.image_encoder(prepared_inputs[0])
+        input_tensors = [img_feat] + list(prepared_inputs[1:7])
+        bev_feat_ref = model.img_view_transformer(input_tensors)[0]
+
+    model.img_view_transformer.accelerate = True
+    with torch.no_grad():
+        prepared_inputs = [d.cuda() for d in export_data['img_inputs'][0]]
+        prepared_inputs = model.prepare_inputs(prepared_inputs)
+        img_feat, _ = model.image_encoder(prepared_inputs[0])
+        input_tensors = [img_feat] + list(prepared_inputs[1:7])
+        bev_feat_fast = model.img_view_transformer(input_tensors)[0]
+        _, coors_img_list, coors_depth_list = \
+            model.img_view_transformer.get_fastray_input(input_tensors)
+
+    assert torch.all(bev_feat_ref == bev_feat_fast)
+
+    img = prepared_inputs[0][0].cuda().float().contiguous()
+    coors_img = coors_img_list[0].contiguous()
+    coors_depth = coors_depth_list[0].contiguous()
+    onnx_path = os.path.join(args.work_dir, model_prefix + '.onnx')
+    export_kwargs = dict(
+        opset_version=11,
+        input_names=['img', 'coors_img', 'coors_depth'],
+        output_names=[f'output_{j}' for j in
+                      range(6 * len(model.pts_bbox_head.task_heads))])
+    if args.dynamic_coors:
+        export_kwargs['dynamic_axes'] = {
+            'coors_img': {
+                0: 'num_fastray_indices'
+            },
+            'coors_depth': {
+                0: 'num_fastray_indices'
+            }
+        }
+
+    with torch.no_grad():
+        torch.onnx.export(
+            model,
+            (img, coors_img, coors_depth),
+            onnx_path,
+            **export_kwargs)
     # check onnx model
-    onnx_model = onnx.load(args.work_dir + model_prefix + '.onnx')
+    onnx_model = onnx.load(onnx_path)
     try:
         onnx.checker.check_model(onnx_model)
     except Exception:
         print('ONNX Model Incorrect')
     else:
         print('ONNX Model Correct')
-    onnx_simp, check = simplify(onnx_model)
-    assert check, "Simplified ONNX model could not be validated"
-    onnx.save(onnx_simp, args.work_dir + model_prefix + '.onnx')
-    print(f"🚀 The export is completed. ONNX save as {args.work_dir + model_prefix + '.onnx'} 🤗, Have a nice day~")
+    if args.skip_simplify:
+        print('skip_simplify: True')
+    else:
+        onnx_simp, check = simplify(onnx_model)
+        assert check, 'Simplified ONNX model could not be validated'
+        onnx.save(onnx_simp, onnx_path)
+    print(f'export_sample_index: {args.sample_index}')
+    print(f'export_coors_shape: {tuple(coors_img.shape)}')
+    print(f'export_dynamic_coors: {args.dynamic_coors}')
+    print(f'🚀 The export is completed. ONNX save as {onnx_path} 🤗, Have a nice day~')
 
     # # convert to tensorrt
     # input_shapes = dict(

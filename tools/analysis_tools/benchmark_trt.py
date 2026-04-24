@@ -1,6 +1,9 @@
 import time
 from typing import Dict, Optional, Sequence, Union
 
+from tools.trt_env import bootstrap_tensorrt_import
+
+bootstrap_tensorrt_import()
 import tensorrt as trt
 import torch
 import torch.onnx

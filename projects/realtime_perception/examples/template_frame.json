@@ -1,0 +1,50 @@
+{
+  "frame_id": "frame_000001",
+  "timestamp": 1710000000.0,
+  "image_color": "bgr",
+  "metadata": {
+    "cache_key": "my_camera_rig"
+  },
+  "camera_images": {
+    "CAM_FRONT_LEFT": "/abs/path/to/CAM_FRONT_LEFT.jpg",
+    "CAM_FRONT": "/abs/path/to/CAM_FRONT.jpg",
+    "CAM_FRONT_RIGHT": "/abs/path/to/CAM_FRONT_RIGHT.jpg",
+    "CAM_BACK_LEFT": "/abs/path/to/CAM_BACK_LEFT.jpg",
+    "CAM_BACK": "/abs/path/to/CAM_BACK.jpg",
+    "CAM_BACK_RIGHT": "/abs/path/to/CAM_BACK_RIGHT.jpg"
+  },
+  "ego2global_rotation": [1.0, 0.0, 0.0, 0.0],
+  "ego2global_translation": [0.0, 0.0, 0.0],
+  "camera_infos": {
+    "CAM_FRONT_LEFT": {
+      "cam_intrinsic": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+      "sensor2ego_rotation": [1.0, 0.0, 0.0, 0.0],
+      "sensor2ego_translation": [0.0, 0.0, 0.0]
+    },
+    "CAM_FRONT": {
+      "cam_intrinsic": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+      "sensor2ego_rotation": [1.0, 0.0, 0.0, 0.0],
+      "sensor2ego_translation": [0.0, 0.0, 0.0]
+    },
+    "CAM_FRONT_RIGHT": {
+      "cam_intrinsic": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+      "sensor2ego_rotation": [1.0, 0.0, 0.0, 0.0],
+      "sensor2ego_translation": [0.0, 0.0, 0.0]
+    },
+    "CAM_BACK_LEFT": {
+      "cam_intrinsic": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+      "sensor2ego_rotation": [1.0, 0.0, 0.0, 0.0],
+      "sensor2ego_translation": [0.0, 0.0, 0.0]
+    },
+    "CAM_BACK": {
+      "cam_intrinsic": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+      "sensor2ego_rotation": [1.0, 0.0, 0.0, 0.0],
+      "sensor2ego_translation": [0.0, 0.0, 0.0]
+    },
+    "CAM_BACK_RIGHT": {
+      "cam_intrinsic": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+      "sensor2ego_rotation": [1.0, 0.0, 0.0, 0.0],
+      "sensor2ego_translation": [0.0, 0.0, 0.0]
+    }
+  }
+}

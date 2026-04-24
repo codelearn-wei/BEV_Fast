@@ -529,7 +529,14 @@ class FastBEVTRT(FastBEV):
         img = torch.cat([img_0, img_rest])
 
         if channel != self.img_view_transformer.out_channels:
-            depth = img[:, :self.img_view_transformer.D].reshape(-1)
+            depth = img[:, :self.img_view_transformer.D]
+            # Apply the same activation used in FastrayTransformer.forward
+            # (sigmoid by default) so TRT matches PyTorch inference exactly.
+            if self.img_view_transformer.depth_act == 'softmax':
+                depth = depth.softmax(dim=1)
+            else:
+                depth = depth.sigmoid()
+            depth = depth.reshape(-1)
             x = img[:, self.img_view_transformer.D:(self.img_view_transformer.D + self.img_view_transformer.out_channels)]
             x = x[coors_img]
             depth = depth[coors_depth].unsqueeze(1)

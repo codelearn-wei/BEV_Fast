@@ -155,10 +155,10 @@ python tools/fastbev_infer.py \
 下面这条命令已经在当前工程里跑通，并成功导出 JSON:
 
 ```bash
-python tools/fastbev_infer.py \
-  configs/fastbev/paper/fastbev-r50-cbgs.py \
-  model/fastbev-r50-cbgs.pth \
-  --sample-index 10 \
+python tools/fastbev_infer.py 
+  configs/fastbev/paper/fastbev-r50-cbgs.py 
+  model/fastbev-r50-cbgs.pth 
+  --sample-index 10 
   --device cuda:0
 ```
 
@@ -310,6 +310,9 @@ inference_ms: 123.45
 
 - [tools/convert_fastbev_to_TRT.py](/home/ego_vehicle/MY_project/BEV_perception/advanced-fastbev-fastbev/tools/convert_fastbev_to_TRT.py)
 - [tools/analysis_tools/benchmark_trt_fastbev.py](/home/ego_vehicle/MY_project/BEV_perception/advanced-fastbev-fastbev/tools/analysis_tools/benchmark_trt_fastbev.py)
+- [tools/fastbev_trt_runtime.py](/home/ego_vehicle/MY_project/BEV_perception/advanced-fastbev-fastbev/tools/fastbev_trt_runtime.py)
+- [tools/fastbev_trt_infer.py](/home/ego_vehicle/MY_project/BEV_perception/advanced-fastbev-fastbev/tools/fastbev_trt_infer.py)
+- [tools/fastbev_trt_video_demo.py](/home/ego_vehicle/MY_project/BEV_perception/advanced-fastbev-fastbev/tools/fastbev_trt_video_demo.py)
 
 但是当前这套环境里还没有安装这些部署依赖:
 
@@ -328,6 +331,98 @@ inference_ms: 123.45
 
 1. 导出 ONNX
 2. 用 TensorRT engine 跑 `benchmark_trt_fastbev.py`，和 `summary.json` 里的 PyTorch 基线做对比
+
+### 7.3 Engine 推理与可视化
+
+如果 TensorRT engine 已经生成完成，当前推荐优先使用下面三个入口:
+
+#### 单样本 TensorRT 推理
+
+```bash
+python tools/fastbev_trt_infer.py 
+  configs/fastbev/paper/fastbev-r50-cbgs.py 
+  outputs/deploy/fastbev_fp16.engine 
+  --checkpoint model/fastbev-r50-cbgs.pth 
+  --sample-index 10 
+  --device cuda:0
+```
+
+如果你要让同一个 engine 稳定支持连续帧样本或自定义相机输入，建议重新导出 ONNX 时开启动态 `coors_img/coors_depth`:
+
+```bash
+python tools/convert_fastbev_to_TRT.py 
+  configs/fastbev/paper/fastbev-r50-cbgs.py 
+  model/fastbev-r50-cbgs.pth 
+  outputs/deploy/ 
+  --prefix fastbev 
+  --fp16 
+  --sample-index 10 
+  --dynamic-coors
+```
+
+当前导出脚本会打印:
+
+- `export_sample_index`
+- `export_coors_shape`
+- `export_dynamic_coors`
+
+这样可以明确当前 ONNX / engine 是按哪一帧、哪种 `fastray` 索引形状导出来的。
+
+#### 连续帧 TensorRT 视频展示
+
+```bash
+python tools/fastbev_trt_video_demo.py 
+  configs/fastbev/paper/fastbev-r50-cbgs.py 
+  outputs/deploy/fastbev_fp16.engine 
+  --checkpoint model/fastbev-r50-cbgs.pth 
+  --start-index 10 
+  --num-frames 30 
+  --device cuda:0 
+  --fps 8
+```
+
+#### 自定义多相机输入接口
+
+底层接口在:
+
+- [tools/fastbev_trt_runtime.py](/home/ego_vehicle/MY_project/BEV_perception/advanced-fastbev-fastbev/tools/fastbev_trt_runtime.py)
+
+它提供 `FastBEVTRTInferencer`，支持:
+
+- `infer_dataset_sample(sample_index)`
+- `infer_custom_images(camera_images, camera_infos, ...)`
+
+如果你要先用配置文件方式接入自定义多相机输入，可以参考模板:
+
+- [examples/fastbev_trt_custom_input.json](/home/ego_vehicle/MY_project/BEV_perception/advanced-fastbev-fastbev/examples/fastbev_trt_custom_input.json)
+
+自定义输入至少需要这几部分:
+
+- `camera_images`: 六路相机图像路径或内存图像
+- `camera_infos`: 每路相机的 `cam_intrinsic`
+- `camera_infos`: 每路相机的 `sensor2ego_rotation`
+- `camera_infos`: 每路相机的 `sensor2ego_translation`
+- `ego2global_rotation` / `ego2global_translation`: 当前时刻自车位姿
+
+相机名称建议直接使用 nuScenes / FastBEV 默认顺序:
+
+- `CAM_FRONT_LEFT`
+- `CAM_FRONT`
+- `CAM_FRONT_RIGHT`
+- `CAM_BACK_LEFT`
+- `CAM_BACK`
+- `CAM_BACK_RIGHT`
+
+对应命令:
+
+```bash
+python tools/fastbev_trt_infer.py \
+  configs/fastbev/paper/fastbev-r50-cbgs.py \
+  outputs/deploy/fastbev_fp16.engine \
+  --checkpoint model/fastbev-r50-cbgs.pth \
+  --custom-input examples/fastbev_trt_custom_input.json \
+  --device cuda:0
+```
 
 ## 8. 后续开发建议
 
